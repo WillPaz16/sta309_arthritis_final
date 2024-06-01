@@ -18,5 +18,7 @@ You must also include 2 additional exploratory plots. These can be anything rele
   * Relationships among any of the above variables, investigating possible sources of confounding.
   * Different types of physical activity and their relationships with arthritis risk.
 
+\n
+
 ![arthritisDashboard](https://github.com/WillPaz16/sta309_arthritis_final/assets/144275029/f510d6c1-14dd-41c7-bd6f-38d2acf76f0b)
 
