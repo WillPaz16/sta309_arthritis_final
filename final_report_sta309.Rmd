@@ -1,0 +1,842 @@
+---
+title: "Final Report - STA 309"
+author: "Will Paz"
+date: "2024-05-15"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = FALSE, dplyr.summarise.inform = FALSE, warning=FALSE, message=FALSE)
+options(dplyr.print_minimal = "all")
+library(tidyverse)
+library(haven)
+```
+
+## Introduction
+
+This part of the exam will require you to work through the full data analysis process: data processing, data visualization, and predictive modeling.
+
+We will be using data from the National Health and Nutrition Examination Survey (NHANES). This survey contains many questionnaires related to health an nutrition and is usually run once every two years. The most recent survey combined data from 2017-2020, due to the survey process being interrupted by Covid in 2020. We will use the 2017-2020 survey data. You will need to read 5 different NHANES data sets into R (see Part 1 below). You can find all of the necessary data sets and documentation explaining the variables on the NHANES website. Note: all of the data sets are .XPT files, which are a SAS file format. Thankfully, the R package "haven" contains a function read_xpt that seamlessly reads .XPT files into R. All of the NHANES data files can be directly read into R from the NHANES website using read_xpt. 
+
+---------------------------------------------------------------------------------
+
+## Part 1: Preprocessing
+
+(A) Load data from the following NHANES questionnaires (for the 2017-2020 cycle):
+
+  * Demographics (under "Demographics Data")
+  * Alcohol Use (under "Questionnaire Data")
+  * Physical Activity (under "Questionnaire Data")
+  * Smoking - Cigarette Use (under "Questionnaire Data")
+  * Medical Conditions (under "Questionnaire Data")
+
+```{r}
+demo <- read_xpt("P_DEMO.XPT")
+alc <- read_xpt("P_ALQ.XPT")
+physAct <- read_xpt("P_PAQ.XPT")
+medCond <- read_xpt("P_MCQ.XPT")
+smokeCig <- read_xpt("P_SMQ.XPT")
+```
+
+(B) Your goal with the NHANES data is to investigate the risk factors for arthritis. Start by generating the response variable based on the following information (from the Medical Conditions questionnaire):
+
+  * The question about arthritis is "MCQ160a".
+
+  * See the documentation page. for more details about the responses, which have values of 1, 2, 7, 9, or missing. Be     sure to code these appropriately!
+
+  * There are over 5700 missing values to this question! Why? (You don't have to answer this in your report, but        knowing why will help you understand the context!)
+
+  * There is another question ("MCQ195") related to arthritis. This may be useful for part 2. 
+
+```{r}
+arthritis <- medCond %>% 
+  select(SEQN, MCQ160A) %>% 
+  rename(haveArth = MCQ160A) %>% 
+  mutate(haveArth = case_when(
+    haveArth == 1 ~ "Yes",
+    haveArth == 2 ~ "No"))
+```
+
+*Note that there are approximately 5700 missing values in our data set because arthritis is not surveyed for anyone under the age of 20*
+
+(C) Obtain the following predictors from the other data sets
+
+  * Demographics: Age ("RIDAGEYR"), Gender ("RIAGENDR"), and Race ("RIDRETH1" or "RIDRETH3", see documentation for        details)
+      * You may want to do some post-processing with race to combine categories
+
+```{r}
+demoPred <- demo %>% 
+  select(SEQN,RIDAGEYR,RIAGENDR,RIDRETH3) %>% 
+  rename(age = RIDAGEYR,
+         gender = RIAGENDR,
+         race = RIDRETH3) %>% 
+  mutate(gender = case_when(
+    gender == 1 ~ "Male",
+    gender == 2 ~ "Female"),
+    
+    race = case_when(
+      race %in% c(1,2) ~ "Hispanic",
+      race == 3 ~ "Non-Hispanic White",
+      race == 4 ~ "Non-Hispanic Black",
+      race == 6 ~ "Non-Hispanic Asian",
+      race == 7 ~ "Other/Multi-Racial"
+    ),
+    
+    age = case_when(
+      20 <= age & age <= 24 ~ "Age 20 to 24",
+      25 <= age & age <= 29 ~ "Age 25 to 29",
+      30 <= age & age <= 34 ~ "Age 30 to 34",
+      35 <= age & age <= 39 ~ "Age 35 to 39",
+      40 <= age & age <= 44 ~ "Age 40 to 44",
+      45 <= age & age <= 49 ~ "Age 45 to 49",
+      50 <= age & age <= 54 ~ "Age 50 to 54",
+      55 <= age & age <= 59 ~ "Age 55 to 59",
+      60 <= age & age <= 64 ~ "Age 60 to 64",
+      65 <= age & age <= 69 ~ "Age 65 to 69",
+      70 <= age & age <= 74 ~ "Age 70 to 74",
+      75 <= age & age <= 79 ~ "Age 75 to 79",
+      80 <= age ~ "Age 80+"
+    ) )
+```
+
+  * Alcohol Use: Have they had alcohol ever ("ALQ111"), have they had alcohol in the past year ("ALQ121"), and daily      drinks ("ALQ130")
+      * Daily drinks is going to be the predictor, but they only got this question if indicated they had alcohol ever         AND had alcohol in the past year (otherwise it is 0 drinks per day).  
+
+```{r}
+alcUse <- alc %>%
+  select(SEQN,ALQ111,ALQ121,ALQ130) %>% 
+  rename(hadAlcEver = ALQ111,
+         alcPastYear = ALQ121,
+         dailyDrinks = ALQ130) %>% 
+  reframe(SEQN, dailyDrinks = ifelse(is.na(dailyDrinks),0,dailyDrinks)) %>% 
+  filter(dailyDrinks < 16)
+```
+  * Smoking: Are they a smoker? This is built from 2 variables: 
+    * Have they smoked at least 100 cigarettes in their life ("SMQ020")? If no, they are not considered a smoker. 
+    * Do you now smoke cigarettes ("SMQ040")? Note: this question will be "missing" if they answered "no" to               "SMQ020". 
+    
+```{r}
+smokePred <- smokeCig %>% 
+  select(SEQN,SMQ020,SMQ040) %>% 
+  rename(atLeast100 = SMQ020,
+         nowSmoke = SMQ040) %>% 
+  mutate(smoke = case_when(
+    atLeast100 == 2 ~ "Never",
+    nowSmoke == 1 ~ "Every Day",
+    nowSmoke == 2 ~ "Some Days",
+    nowSmoke == 3 ~ "Not Anymore")) %>% 
+  reframe(SEQN,smoke)
+```
+
+  * Physical Activity: There are a few different types of data you could use to quantify physical activity. My           recommendation is to use the total minutes of vigorous work ("PAD615") plus total minutes of vigorous                recreational activities ("PAD660"), but feel free to deviate from this as long as you include some metric for        physical activity from this questionnaire. Note: both of these variables will be "missing" if a respondent           indicates no activity - these should be coded as 0, not missing!
+  
+```{r}
+physPred <- physAct %>% 
+  select(SEQN,PAD615,PAD660) %>% 
+  rename(vigWork = PAD615,
+         vigRec = PAD660) %>% 
+  mutate(vigWork = ifelse(is.na(vigWork),0,vigWork),
+         vigRec = ifelse(is.na(vigRec),0,vigRec)) %>% 
+  filter(vigWork < 7777, vigRec < 7777) %>% 
+  reframe(SEQN, exercise = vigWork + vigRec)
+```
+(D) Merge all of the NHANES data into one data frame
+
+```{r}
+nhanesPred <- left_join(alcUse,arthritis,by="SEQN") %>% 
+  left_join(demoPred, by="SEQN") %>% 
+  left_join(physPred, by="SEQN") %>% 
+  left_join(smokePred, by="SEQN") %>% 
+  na.omit()
+```
+
+---------------------------------------------------------------------------------
+
+## Part 2: Dashboard
+
+```{r}
+library(patchwork)
+library(ggthemes)
+```
+
+
+Create a dashboard that includes visualizations to investigate the relationship between arthritis and each of the following variables:
+
+  1. Gender
+  2. Age
+  3. Race
+  4. Daily drinks (i.e., alcohol use)
+  5. Smoking status
+  6. Physical activity
+  
+You must also include 2 additional exploratory plots. These can be anything relevant to the analysis, but here are some suggestions:
+
+  1. Relationship between any of the above variables and the different types of arthritis ("MCQ195").
+  2. Relationships among any of the above variables, investigating possible sources of confounding. 
+  3. Different types of physical activity and their relationships with arthritis risk. 
+
+Keep in mind the various types of variables when choosing which type of plots to use, and be sure to follow all of the data visualization principles. Be sure to use subtitles and annotations to highlight any important observations!
+
+### Dashboard Visualizations
+
+#### Gender
+
+```{r}
+genderPlot <- nhanesPred %>%
+  filter(!is.na(haveArth)) %>%
+  group_by(gender,haveArth) %>%
+  summarize(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100)
+
+gender.plot <- ggplot(genderPlot, aes(x = gender, y = percentage, fill = haveArth)) +
+  geom_bar(stat = "identity") +
+  labs(x = element_blank(),
+       y = "Arthritis (%)",
+       title = "Comparing Arthritis Occurances between Males and Females",
+       subtitle = "Arthritis sampling is limited to ages 20 to 120") +
+  scale_fill_manual(values = c("No" = "blanchedalmond", "Yes" = "indianred1")) +
+  annotate("label",x=1.5,y=15,label="Arthritis", color="indianred1",size=6) +
+  annotate("label",x=1.5,y=60,label="NO Arthritis", color="gray50",size=6) +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "none")
+gender.plot
+```
+
+#### Age
+
+```{r}
+agePlot <- nhanesPred %>%
+  filter(!is.na(haveArth)) %>%
+  group_by(age,haveArth) %>%
+  summarize(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100) %>% 
+  filter(haveArth == "Yes")
+
+age.plot <- ggplot(agePlot, aes(x = age, y = percentage)) +
+  geom_point(color="indianred1",size=3) +
+  geom_text(aes(label=age),size=2.2, vjust = -1.7) +
+  labs(x = "Age",
+       y = "Arthritis (%)",
+       title = "Comparing Arthritis Occurances between various Age Groups",
+       subtitle = "Arthritis sampling is limited to ages 20 to 120") +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.x = element_blank(),
+        legend.position = "none")
+age.plot
+```
+
+#### Race
+
+```{r}
+racePlot <- nhanesPred %>%
+  filter(!is.na(haveArth)) %>%
+  group_by(race,haveArth) %>%
+  summarize(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100) %>% 
+  arrange(desc(percentage))
+
+racePlot$race <- factor(racePlot$race, levels = c("Non-Hispanic Asian", "Hispanic","Non-Hispanic Black",
+                                                  "Other/Multi-Racial","Non-Hispanic White"))
+
+race.plot <- ggplot(racePlot, aes(y = race, x = percentage, fill = haveArth)) +
+  geom_bar(stat = "identity") +
+  labs(y = element_blank(),
+       x = "Arthritis (%)",
+       title = "Comparing Arthritis Occurances between various Racial Demographics",
+       subtitle = "Arthritis sampling is limited to ages 20 to 120") +
+  scale_fill_manual(values = c("No" = "blanchedalmond", "Yes" = "indianred1")) +
+  annotate("label",x=15,y=3,label="Arthritis", color="indianred1",size=6) +
+  annotate("label",x=65,y=3,label="NO Arthritis", color="gray50",size=6) +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "none")
+race.plot
+```
+
+#### Daily Drinks
+
+```{r}
+drinkPlot <- nhanesPred %>%
+  filter(!is.na(haveArth)) %>%
+  group_by(dailyDrinks,haveArth) %>%
+  summarize(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100) %>% 
+  filter(haveArth == "Yes")
+
+drink.plot <- ggplot(drinkPlot, aes(x = dailyDrinks, y = percentage)) +
+  geom_point(color="indianred1",size=3) +
+  labs(x = "Alcoholic Beverages per day",
+       y = "Arthritis (%)",
+       title = "Prevelance of Arthritis based on Alcoholic Beverages per day",
+       subtitle = "Arthritis sampling is limited to ages 20 to 120") +
+  theme_minimal() +
+  theme(panel.grid.minor.y = element_blank(),
+        legend.position = "none")
+drink.plot
+```
+
+#### Smoking Status
+
+```{r}
+smokePlot <- nhanesPred %>%
+  filter(!is.na(haveArth),
+         !is.na(smoke)) %>%
+  group_by(smoke,haveArth) %>%
+  summarize(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100)
+
+smokePlot$smoke <- factor(smokePlot$smoke, levels = c("Never","Not Anymore",
+                                                      "Some Days","Every Day"))
+
+smoke.plot <- ggplot(smokePlot, aes(x = smoke, y = percentage, fill = haveArth)) +
+  geom_bar(stat = "identity") +
+  labs(x = element_blank(),
+       y = "Arthritis (%)",
+       title = "Observing Arthritis Occurances based on Smoking Status",
+       subtitle = "Smoking Status is defined under the guidelines of the NHANES") +
+  scale_fill_manual(values = c("No" = "blanchedalmond", "Yes" = "indianred1")) +
+  annotate("label",x=2.5,y=16,label="Arthritis", color="indianred1",size=6) +
+  annotate("label",x=2.5,y=65,label="NO Arthritis", color="gray50",size=6) +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "none")
+smoke.plot
+```
+
+#### Physical Activity
+
+```{r}
+physPlot <- nhanesPred %>%
+  filter(!is.na(haveArth),
+         !is.na(exercise)) %>%
+  group_by(exercise,haveArth) %>%
+  summarize(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100) %>% 
+  filter(haveArth == "Yes")
+
+phys.plot <- ggplot(physPlot, aes(x = exercise, y = percentage)) +
+  geom_point(color="indianred1") +
+  labs(x = "Amount of Vigorous Activity (min)",
+       y = "Arthritis (%)",
+       title = "Comparing Arthritis Occurances based on amount of exercise",
+       subtitle = "Exercise is the sum of estimated vigorous physical activity for work or personal reasons") +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "none")
+phys.plot
+```
+
+### Exploratory Visualizations
+
+#### Type of Arthritis
+
+```{r}
+arthType <- medCond %>% 
+  select(SEQN, MCQ195) %>% 
+  rename(arthType = MCQ195) %>% 
+  mutate(arthType = case_when(
+    arthType == 1 ~ "Osteoarthritis or degenerative",
+    arthType == 2 ~ "Rheumatoid",
+    arthType == 3 ~ "Psoriatic",
+    arthType %in% c(4,7,9) ~ "Other"))
+
+arthPlot <- left_join(nhanesPred,arthType,by="SEQN") %>% 
+  na.omit() %>% 
+  group_by(gender,arthType) %>% 
+  summarize(count = n()) %>%
+  group_by(arthType) %>% 
+  mutate(percentage = count / sum(count) * 100)
+
+arth.plot <- ggplot(arthPlot, aes(x = arthType, y = percentage, fill = gender)) +
+  geom_bar(stat = "identity") +
+  labs(x = element_blank(),
+       y = "Gender (%)",
+       title = "Proportion of Gender within each Type of Arthritis",
+       subtitle = "Arthritis sampling is limited to ages 20 to 120") +
+  scale_fill_manual(values = c("Male" = "dodgerblue", "Female" = "maroon3")) +
+  annotate("label",x=2.5,y=25,label="Male", color="dodgerblue",size=6) +
+  annotate("label",x=2.5,y=75,label="Female", color="maroon3",size=6) +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "none")
+arth.plot
+```
+
+#### Confounding Variables?
+
+```{r}
+confoundPlot <- nhanesPred %>%
+  group_by(race,gender) %>%
+  summarize(count = n()) %>%
+  group_by(gender) %>% 
+  mutate(percentage = count / sum(count) * 100)
+
+confound.plot <- ggplot(confoundPlot, aes(x = gender, y = percentage, fill = race)) +
+  geom_bar(stat = "identity") +
+  labs(x = element_blank(),
+       y = "Race (%)",
+       title = "Observing Racial Groups between Gender",
+       subtitle = "Racial Groups are determined by the National Health and Nutrition Examination Survey") +
+  scale_fill_manual(values = c("Hispanic" = "darkorange1","Non-Hispanic Asian" = "tomato2",
+                               "Non-Hispanic Black" = "saddlebrown","Non-Hispanic White" = "wheat",
+                               "Other/Multi-Racial" = "gray65")) +
+  annotate("label",x=1.5,y=90,label="Hispanic", color="darkorange1",size=5) +
+  annotate("label",x=1.5,y=72,label="Non-Hispanic Asian", color="tomato2",size=5) +
+  annotate("label",x=1.5,y=53,label="Non-Hispanic Black", color="saddlebrown",size=5) +
+  annotate("label",x=1.5,y=25,label="Non-Hispanic White", color="wheat",size=5) +
+  annotate("label",x=1.5,y=5,label="Other/Multi-Racial", color="gray65",size=5) +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "none")
+confound.plot
+```
+
+```{r}
+dashboard <- ((race.plot+ age.plot + gender.plot) / (drink.plot + smoke.plot + phys.plot)) / (confound.plot + arth.plot) +
+  plot_annotation(title = "Investigating the Relationship between various Relevant Predictors",
+                  subtitle = "Study Conducted by Will Paz",
+                  caption = "Source: National Health and Nutrition Examination Survey",
+                  theme = theme(plot.title = element_text(size = 25, hjust=.5),
+                                plot.subtitle = element_text(size = 20, hjust=.5),
+                                plot.caption = element_text(size = 20)))
+
+ggsave(plot=dashboard, filename="arthritisDashboard.png",
+       width=25, height=20, dpi=300)
+```
+
+---------------------------------------------------------------------------------
+
+## Part 3
+
+```{r}
+options(warn=-1, message=FALSE)
+library(caret)
+library(mplot)
+library(rpart)
+library(rpart.plot)
+```
+
+You must train 5 different models to predict arthritis (since arthritis is categorical - yes/no - these should be classification models). You will use a 5-fold cross-validation to evaluate the models. Be sure to set a random seed each time you fit a model. Your choice of 5 models must meet the following criteria:
+
+  1. You must include at least 3 different types of models (logistic regression, classification tree, bagging, random     forest, etc.). If you are feeling ambitious, you do not have to be limited to the methods covered in class. 
+  2. At least one of the models must be a tree-based method. 
+  3. At least one of the models must include all 6 predictors listed above. 
+  4. At least one of the models must include only a smaller subset of the predictors. 
+  
+List the models you have chosen in your report, along with a brief rationale for your choices. 
+
+```{r}
+set.seed(16)
+cvmethod <- trainControl(method = "cv", number = 5)
+```
+
+### Models
+
+#### Random Forest Model - v.1
+
+```{r}
+set.seed(16)
+rf.mod1 <- train(haveArth ~  dailyDrinks + age + gender + race + exercise + smoke,
+                data=nhanesPred,
+                method="rf",
+                tuneGrid=expand.grid(mtry=1:6),
+                trControl=cvmethod,
+                importance=TRUE)
+## varImp(rf.mod1$finalModel)
+## rf.mod1
+```
+
+*The first model that I choose to look at the results for was a random forest model with all of the predictors available in our study. I felt like this was an important first model to see if there were a combination of predictors that may lead to the most successful results, as because it's a very popular choice of model. So, as we look at the results and the variable importance, I found that the daily consumption of alcohol, race, and physical activity were less important to the model, hence the next model also being a random forest model.*
+
+#### Random Forest Model - v.2
+
+```{r}
+set.seed(16)
+rf.mod2 <- train(haveArth ~  age + gender + smoke,
+                data=nhanesPred,
+                method="rf",
+                tuneGrid=expand.grid(mtry=1:3),
+                trControl=cvmethod,
+                importance=TRUE)
+## rf.mod2
+```
+
+*As mentioned above, the random forest model helped refine the predictors that would of importance to the model and the second random forest is the refined model with only the predictors that offered importance in the full random forest model. As you can see, the accuracy in the first is larger, on average, thus leading to the conclusion that it the superior of the two random forest models. * 
+
+#### Logistic Regression
+
+```{r}
+set.seed(16)
+glm.mod <- train(haveArth ~ dailyDrinks + age + gender + race + exercise + smoke,
+                data=nhanesPred,
+                method="glm",
+                trControl=cvmethod,
+                family="binomial")
+```
+
+*Using a logistic regression was a simple choice. Since the response variable only contains two possible results, "Yes" or "No", it's textbook to see how a logistic regression models the data. I decided to keep all of the predictors in this model because the more information given, the better chance we have for a more accurate model as long as there are no predictors that are independent from the response variable.*
+
+#### Classification Tree
+
+```{r}
+set.seed(16)
+class.tree <- train(haveArth ~ dailyDrinks + age + gender + race + exercise + smoke,
+                data=nhanesPred,
+                method="rpart",
+                trControl=cvmethod)
+
+tree1 <- rpart(haveArth ~ dailyDrinks + age + gender + race + exercise + smoke,
+               data=nhanesPred)
+prp(tree1, main="Arthritis Classification Tree")
+```
+
+*For this model, I chose to use the classification tree to see what groups may have had the largest effect on arthritis. As you can see in visual above, age and gender are the classifications that appear to have the most impact. A great way to see which variables were important was to use all of the predictors in the original model.*
+
+#### Bagged Tree Model
+
+```{r}
+set.seed(16)
+bag.mod <- train(haveArth ~  dailyDrinks + age + gender + race + exercise + smoke,
+                data=nhanesPred,
+                method="treebag",
+                trControl=cvmethod,
+                importance=TRUE)
+
+## varImp(bag.mod$finalModel)
+```
+
+*Next up, I chose to look at the bagged tree model, which is very similar to a random forest model, but instead of considering each subset, we just consider a model that uses the set of all predictors. And as you may notice in the variable importance, each predictor brings something to the table and by definition, it would make sense that the entire set of predictors would lead to each predictor having importance.*
+
+#### k-Nearest Neighbors Model
+
+```{r}
+set.seed(16)
+knn.mod <- train(haveArth ~ dailyDrinks + age + gender + race + exercise + smoke,
+                data=nhanesPred,
+                method="knn",
+                trControl=cvmethod,
+                tuneGrid=expand.grid(k=1:92)) ## k=1:92 was determined by the "square root rule",
+                                              ## which is let k be the square root of the observations
+```
+
+*Lastly, I chose to use a k-Nearest Neighbors (KNN) model. The KNN model models the data based on either the Euclidean Distance or any comparable distance measure, where we find the k-nearest points that will allow us to predict where the future value or class will be. In our case, we're using this to predict whether a specific individual will have arthritis or not.*
+
+---------------------------------------------------------------------------------
+
+## Part 4
+
+Perform a comparison of the different models, including a visualization of the comparison. Which model is best at predicting arthritis? Are there any issues or caveats with this comparison? Is there a different metric that might be more useful than accuracy? (Think about the context; you don't actually need to compute a different metric, just speculate about what might be a better choice).
+
+### Model Summary
+
+```{r}
+models <- resamples(list(randomForest=rf.mod1,
+               logModel=glm.mod,
+               classTree=class.tree,
+               baggedModel=bag.mod,
+               KNN=knn.mod))
+summary(models)
+```
+
+### Accuracy Comparion Visual
+
+```{r}
+ggplot(models, metric="Accuracy") +
+  theme_minimal()
+```
+
+### Takeaways
+
+*After looking at the accuracies of each model in both the resampled summary as well as in the above visual, one can see that the logistic regression model was the most successful. Not only does the model have the least variance overall, but it also has the largest mean and median value for accuracy. Just a reminder, accuracy is the proportion to which the model successfully predicts arthritis.*
+
+*In our comparison, it is important to always try and improve our models and methodology. I feel that the choices for models was not an issue, but instead, the issues have to do with how the data is represented. There is an ambiguous nature to how the data was collected, with much ignorance in the responses of each patient. I would have loved to have more categorizations of individuals so that we could create a better model to suit each individual, after all, we're all very different. Another interesting suggestion to the study would to look at various arthritis types and see if a demographic is more prone to receiving a specific diagnosis. Working off that, the severity of the arthritis may also be an intriguing factor to look at.*
+
+*Reflecting on the metric of accuracy in regards to its relevance to our study and if there is a better metric we could use. I think in a more in-depth study into predicting arthritis or even further the type or severity of arthritis, I think that a metric that encompasses both the successful profiling of an individual and its corresponding predictive value could be in an interval rather than a binomial proportion, that takes into account for the spectrum of "correctness", rather than right or wrong.*
+
+---------------------------------------------------------------------------------
+
+## Part 5
+
+```{r}
+library(ggthemes)
+library(ggrepel)
+```
+
+Now you will apply your predictions to create a map that predicts where the arthritis risk will be highest. For privacy reasons, location data from NHANES is not publicly available. But we can still use the demographic information along with census demographic information to predict the arthritis rates in each county. For sake of computation time, we will focus just on the counties in Ohio. 
+
+  1. Read the census data into R using the link above. You will need to do some pivoting with the data to put it into an      easier format for predictions. 
+  2. Subset only Ohio counties. Otherwise, some of the steps below will take a long time to run!
+  3. The census data does not contain information on alcohol use, smoking, or physical activity. If your final model in      Part 4 used these variables, fit a new model without them. 
+  4. Using the demographic information (age, race, gender), predict the arthritis rate for each county. 
+    * As mentioned above, you will need to do some pivoting with the census data to get it into a convenient format.
+    * Remember to incorporate the population size into your calculations. Simply averaging the predictions across all         strata will not be useful. 
+    * The categories for race will need to match the categories you used in your model, which may require some                pre-processing. 
+    * Use the most recent census projections (2019) for your predictions.
+    
+  5. Using the predictions above, create a choropleth map that shows predicted arthritis prevalence rates for all         counties in Ohio. Be sure to choose a color scheme and range that makes sense. Include a subtitle that summarizes your   conclusions from this analysis. If you were allocating resources for arthritis treatment, what parts of the state       would you focus on?
+  
+### Refined Model
+  
+```{r}
+set.seed(16)
+new.glm.mod <- train(haveArth ~ age + gender + race,
+                data=nhanesPred,
+                method="glm",
+                trControl=cvmethod,
+                family="binomial")
+```
+
+*The refined model used for prediction is a logistic regression, since it was most fruitful in the comparison of models. The difference here is that we are only using age, gender, and race as predictors since the census data only includes these are possible predictors. So, in order to create our choropleth map, we must use an up to date model.*
+
+```{r}
+county_data <- read_csv("https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/counties/asrh/cc-est2019-alldata.csv") %>% 
+  filter(STNAME == "Ohio",
+         YEAR == 12)
+
+## Total Population
+totalCounty <- county_data %>% 
+  filter(AGEGRP == 0) %>% 
+  select(CTYNAME,TOT_POP) %>% 
+  rename(countyName = CTYNAME,
+         totalPop = TOT_POP)
+
+## Pivoted Data frame
+county_longer <- county_data %>% 
+  pivot_longer(col=`WA_MALE`:`HNAC_FEMALE`)
+
+## Female County Data
+column_names <- colnames(county_data)
+female_col <- column_names[grep("FEMALE", column_names)]
+
+hispanic_female <- c("H_FEMALE","HWA_FEMALE","HBA_FEMALE","HIA_FEMALE",
+                     "HAA_FEMALE","HNA_FEMALE")
+
+nonhisp_asian_female <- c("AA_FEMALE","NHAA_FEMALE")
+
+nonhisp_white_female <- c("WA_FEMALE","NHWA_FEMALE")
+
+nonhisp_black_female <- c("BA_FEMALE", "NHBA_FEMALE")
+
+femaleCounty <- county_longer %>% 
+  filter(name %in% female_col,
+         AGEGRP != 0) %>% 
+  mutate(gender = "Female",
+         race = case_when(
+           name %in% hispanic_female ~ "Hispanic",
+           name %in% nonhisp_asian_female ~ "Non-Hispanic Asian",
+           name %in% nonhisp_white_female ~ "Non-Hispanic White",
+           name %in% nonhisp_black_female ~ "Non-Hispanic Black",
+           TRUE ~ "Other/Multi-Racial"
+         )) %>% 
+  rename(population = value,
+         age = AGEGRP,
+         countyName = CTYNAME) %>% 
+  select(-c(TOT_POP,TOT_MALE,TOT_FEMALE,YEAR,STNAME,STATE,SUMLEV,COUNTY,name)) %>% 
+  mutate(age = case_when(
+    age == 5 ~ "Age 20 to 24",
+    age == 6 ~ "Age 25 to 29",
+    age == 7 ~ "Age 30 to 34",
+    age == 8 ~ "Age 35 to 39",
+    age == 9 ~ "Age 40 to 44",
+    age == 10 ~ "Age 45 to 49",
+    age == 11 ~ "Age 50 to 54",
+    age == 12 ~ "Age 55 to 59",
+    age == 13 ~ "Age 60 to 64",
+    age == 14 ~ "Age 65 to 69",
+    age == 15 ~ "Age 70 to 74",
+    age == 16 ~ "Age 75 to 79",
+    age >= 17 ~ "Age 80+",
+  )) %>% 
+  na.omit()
+
+## Male County Data
+male_col <- column_names[grep("MALE", column_names)]
+female_col <- column_names[grep("FEMALE", column_names)]
+
+male_col <- setdiff(male_col, female_col)
+
+hispanic_male <- c("H_MALE","HWA_MALE","HBA_MALE","HIA_MALE",
+                     "HAA_MALE","HNA_MALE")
+
+nonhisp_asian_male <- c("AA_MALE","NHAA_MALE")
+
+nonhisp_white_male <- c("WA_MALE","NHWA_MALE")
+
+nonhisp_black_male <- c("BA_MALE", "NHBA_MALE")
+
+maleCounty <- county_longer %>% 
+  filter(name %in% male_col,
+         AGEGRP != 0) %>% 
+  mutate(gender = "Male",
+         race = case_when(
+           name %in% hispanic_male ~ "Hispanic",
+           name %in% nonhisp_asian_male ~ "Non-Hispanic Asian",
+           name %in% nonhisp_white_male ~ "Non-Hispanic White",
+           name %in% nonhisp_black_male ~ "Non-Hispanic Black",
+           TRUE ~ "Other/Multi-Racial"
+         )) %>% 
+  rename(age = AGEGRP,
+         countyName = CTYNAME) %>% 
+  select(-c(TOT_POP,TOT_MALE,TOT_FEMALE,YEAR,STNAME,STATE,SUMLEV,COUNTY,name)) %>% 
+  mutate(age = case_when(
+    age == 5 ~ "Age 20 to 24",
+    age == 6 ~ "Age 25 to 29",
+    age == 7 ~ "Age 30 to 34",
+    age == 8 ~ "Age 35 to 39",
+    age == 9 ~ "Age 40 to 44",
+    age == 10 ~ "Age 45 to 49",
+    age == 11 ~ "Age 50 to 54",
+    age == 12 ~ "Age 55 to 59",
+    age == 13 ~ "Age 60 to 64",
+    age == 14 ~ "Age 65 to 69",
+    age == 15 ~ "Age 70 to 74",
+    age == 16 ~ "Age 75 to 79",
+    age >= 17 ~ "Age 80+",
+  )) %>% 
+  na.omit()
+
+## Merged Male and Female Data frame w/ Population
+countyClean <- full_join(maleCounty,femaleCounty) %>% 
+  group_by(age,countyName,gender,race) %>% 
+  summarise(population = sum(value)) %>% 
+  mutate(population = ifelse(is.na(population),0,population))
+
+## Add predictions to data frame
+countyClean$pred = predict(new.glm.mod, countyClean,type="prob")$Yes
+
+## Clean up data frame for choropleth map
+countyMap <- countyClean %>% 
+  ungroup() %>% 
+  group_by(countyName) %>% 
+  summarize(predArth = sum(population*pred)) %>% 
+  left_join(totalCounty) %>% 
+  group_by(countyName) %>% 
+  summarize(pctArth = predArth/totalPop * 100)
+
+## Preprocess map data for visual
+map <- map_data("county") %>% 
+  filter(region == "ohio") %>% 
+  mutate(countyName = case_when(
+    subregion == "adams" ~ "Adams County",
+    subregion == "allen" ~ "Allen County",
+    subregion == "ashland" ~ "Ashland County",
+    subregion == "ashtabula" ~ "Ashtabula County",
+    subregion == "athens" ~ "Athens County",
+    subregion == "auglaize" ~ "Auglaize County",
+    subregion == "belmont" ~ "Belmont County",
+    subregion == "brown" ~ "Brown County",
+    subregion == "butler" ~ "Butler County",
+    subregion == "carroll" ~ "Carroll County",
+    subregion == "champaign" ~ "Champaign County",
+    subregion == "clark" ~ "Clark County",
+    subregion == "clermont" ~ "Clermont County",
+    subregion == "clinton" ~ "Clinton County",
+    subregion == "columbiana" ~ "Columbiana County",
+    subregion == "coshocton" ~ "Coshocton County",
+    subregion == "crawford" ~ "Crawford County",
+    subregion == "cuyahoga" ~ "Cuyahoga County",
+    subregion == "darke" ~ "Darke County",
+    subregion == "defiance" ~ "Defiance County",
+    subregion == "delaware" ~ "Delaware County",
+    subregion == "erie" ~ "Erie County",
+    subregion == "fairfield" ~ "Fairfield County",
+    subregion == "fayette" ~ "Fayette County",
+    subregion == "franklin" ~ "Franklin County",
+    subregion == "fulton" ~ "Fulton County",
+    subregion == "gallia" ~ "Gallia County",
+    subregion == "geauga" ~ "Geauga County",
+    subregion == "greene" ~ "Greene County",
+    subregion == "guernsey" ~ "Guernsey County",
+    subregion == "hamilton" ~ "Hamilton County",
+    subregion == "hancock" ~ "Hancock County",
+    subregion == "hardin" ~ "Hardin County",
+    subregion == "harrison" ~ "Harrison County",
+    subregion == "henry" ~ "Henry County",
+    subregion == "highland" ~ "Highland County",
+    subregion == "hocking" ~ "Hocking County",
+    subregion == "holmes" ~ "Holmes County",
+    subregion == "huron" ~ "Huron County",
+    subregion == "jackson" ~ "Jackson County",
+    subregion == "jefferson" ~ "Jefferson County",
+    subregion == "knox" ~ "Knox County",
+    subregion == "lake" ~ "Lake County",
+    subregion == "lawrence" ~ "Lawrence County",
+    subregion == "licking" ~ "Licking County",
+    subregion == "logan" ~ "Logan County",
+    subregion == "lorain" ~ "Lorain County",
+    subregion == "lucas" ~ "Lucas County",
+    subregion == "madison" ~ "Madison County",
+    subregion == "mahoning" ~ "Mahoning County",
+    subregion == "marion" ~ "Marion County",
+    subregion == "medina" ~ "Medina County",
+    subregion == "meigs" ~ "Meigs County",
+    subregion == "mercer" ~ "Mercer County",
+    subregion == "miami" ~ "Miami County",
+    subregion == "monroe" ~ "Monroe County",
+    subregion == "montgomery" ~ "Montgomery County",
+    subregion == "morgan" ~ "Morgan County",
+    subregion == "morrow" ~ "Morrow County",
+    subregion == "muskingum" ~ "Muskingum County",
+    subregion == "noble" ~ "Noble County",
+    subregion == "ottawa" ~ "Ottawa County",
+    subregion == "paulding" ~ "Paulding County",
+    subregion == "perry" ~ "Perry County",
+    subregion == "pickaway" ~ "Pickaway County",
+    subregion == "pike" ~ "Pike County",
+    subregion == "portage" ~ "Portage County",
+    subregion == "preble" ~ "Preble County",
+    subregion == "putnam" ~ "Putnam County",
+    subregion == "richland" ~ "Richland County",
+    subregion == "ross" ~ "Ross County",
+    subregion == "sandusky" ~ "Sandusky County",
+    subregion == "scioto" ~ "Scioto County",
+    subregion == "seneca" ~ "Seneca County",
+    subregion == "shelby" ~ "Shelby County",
+    subregion == "stark" ~ "Stark County",
+    subregion == "summit" ~ "Summit County",
+    subregion == "trumbull" ~ "Trumbull County",
+    subregion == "tuscarawas" ~ "Tuscarawas County",
+    subregion == "union" ~ "Union County",
+    subregion == "van wert" ~ "Van Wert County",
+    subregion == "vinton" ~ "Vinton County",
+    subregion == "warren" ~ "Warren County",
+    subregion == "washington" ~ "Washington County",
+    subregion == "wayne" ~ "Wayne County",
+    subregion == "williams" ~ "Williams County",
+    subregion == "wood" ~ "Wood County",
+    subregion == "wyandot" ~ "Wyandot County",
+  ))
+```
+
+### Chloropleth Map
+
+```{r}
+choroplethMap <- left_join(countyMap,map,by="countyName")
+
+ggplot(choroplethMap,aes(x=long,y=lat, group=group)) +
+  geom_polygon(aes(fill=pctArth)) +
+  coord_map() +
+  theme_map() +
+  theme(legend.background = element_rect(fill = "transparent"),
+        legend.position = "right") +
+  scale_fill_gradient2(low="blanchedalmond",high="indianred4",
+                      midpoint=45,limits=c(0,100)) +
+  labs(title="Arthritis Predictions by County in Ohio",
+       caption="Source: Ohio Census Data and NHANES",
+       subtitle = "The county with the overwhelming predicted cases of arthritis is Noble County",
+       fill="Predicted Arthritis Cases (%)")
+```
+
+### Takeaways
+
+*As you can see in the map above, Noble County has an overwhelming amount of predicted cases of arthritis. I do not have certainty on why, but I would have to assume that a specific demographic of individuals that fit the mold for an individual who is predicted to have arthritis based on the predictors mentioned above. If I were a decision maker in the state of Ohio, I would look further into Noble County and why there is a large proportion of predicted arthritis cases. Beyond that, I would focus on the more rural regions of Ohio, because it seems like many densely populated areas such as Columbus (Franklin County) or Holmes County, which has a large density of Mennonite and Amish individuals who likely won't disclose such information as a result from their religious and cultural practices. Otherwise, the only other county that truly stands out that could use an allocation of resources from the state is Ottawa County. Past that, I have full trust in the decision makers in Ohio to allocate arthitis-related resources to locations as desired both based on the information presented above as well as their own contextual knowledge about the state and what it needs.*
+
