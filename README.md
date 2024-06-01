@@ -11,7 +11,7 @@ Create a dashboard that includes visualizations to investigate the relationship 
   * Daily drinks (i.e., alcohol use)
   * Smoking status
   * Physical activity
-  * 
+    
 You must also include 2 additional exploratory plots. These can be anything relevant to the analysis, but here are some suggestions:
 
   * Relationship between any of the above variables and the different types of arthritis (“MCQ195”).
