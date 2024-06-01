@@ -1,2 +1,2 @@
-# sta309_arthritis_final
+# Arthritis Predictions Across Ohio
 Predicting the prevalence of arthritis throughout Ohio.
